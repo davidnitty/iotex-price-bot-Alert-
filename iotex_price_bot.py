@@ -16,11 +16,12 @@ from datetime import datetime
 from typing import Dict, Optional
 
 # Configure logging
+import logging
 logging.basicConfig(
     level=logging.INFO,
-    format=\'%(asctime)s - %(name)s - %(levelname)s - %(message)s\'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("iotx-bot")
 
 class IoTeXPriceBot:
     def __init__(self, bot_token: str, channel_id: str):
