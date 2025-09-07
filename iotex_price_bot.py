@@ -316,23 +316,28 @@ def main():
     BOT_TOKEN = "7774279278:AAGyElsfJXHcJied7GTrzAGzmSAEDYnPy4Q"  # Replace with your bot token from BotFather
     CHANNEL_ID = "-1002633018195"  # Replace with your channel ID (e.g., -1001234567890)
     
-    # Validate configuration
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or CHANNEL_ID == "YOUR_CHANNEL_ID_HERE":
-        print("Error: Please update BOT_TOKEN and CHANNEL_ID in the script")
-        print("BOT_TOKEN: Get this from @BotFather on Telegram")
-        print("CHANNEL_ID: Get this by adding your bot to a channel and using getUpdates API")
-        return
-    
-    # Create and run bot
+    # ---- SINGLE-RUN ENTRYPOINT (for Railway Cron) ------------------------------
+import os
+
+def main():
+    # Read secrets from environment (Railway → Variables)
+    BOT_TOKEN  = os.environ["TG_TOKEN"]
+    CHANNEL_ID = os.environ["TG_CHAT_ID"]
+
+    # Create bot and send ONE price update, then exit
     bot = IoTeXPriceBot(BOT_TOKEN, CHANNEL_ID)
-    
-    # Run a test check first
-    print("Running test price check...")
-    if bot.run_price_check():
-        print("Test successful! Starting continuous monitoring...")
-        bot.run_continuous(interval_minutes=5)
-    else:
-        print("Test failed. Please check your configuration and try again.")
+
+    try:
+        ok = bot.run_price_check()   # <-- runs once and posts
+        if not ok:
+            logger.error("Price check failed; exiting with error.")
+            raise SystemExit(1)
+        logger.info("Price check sent successfully; exiting.")
+    except Exception as e:
+        logger.exception("Unhandled error while sending price update: %s", e)
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
+# ---------------------------------------------------------------------------
+
