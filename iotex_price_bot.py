@@ -1,333 +1,154 @@
 #!/usr/bin/env python3
 """
-IoTeX Price Alert Bot for Telegram
+IoTeX Simple Price Alert Bot for Telegram
 
-This bot monitors IoTeX (IOTX) price changes and sends alerts to a Telegram channel
-every 5 minutes with current price information and percentage changes.
+This bot monitors IoTeX (IOTX) price and sends simple price alerts to a Telegram channel
+every 5 minutes - showing only the current price.
 
 Author: David Nitty
 """
 
 import requests
 import time
-import json
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Optional
-import os
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("iotx-bot")
+
+# Configuration
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+# CoinGecko API URL (no API key required!)
+COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
+TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 class IoTeXPriceBot:
-    def __init__(self, bot_token: str, channel_id: str):
-        """
-        Initialize the IoTeX Price Bot
+    def __init__(self):
+        self.last_price = None
+        self.last_check_time = None
         
-        Args:
-            bot_token (str): Telegram bot token from BotFather
-            channel_id (str): Telegram channel ID where alerts will be sent
-        """
-        self.bot_token = bot_token
-        self.channel_id = channel_id
-        self.telegram_api_url = f"https://api.telegram.org/bot{bot_token}"
-        self.previous_price = None
-        self.price_history = []
-        
-        # API endpoints for IoTeX price data
-        self.coingecko_api = "https://api.coingecko.com/api/v3/simple/price"
-        self.coinmarketcap_api = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-        
-    def get_iotex_price_coingecko(self) -> Optional[Dict]:
-        """
-        Fetch IoTeX price data from CoinGecko API
-        
-        Returns:
-            Dict containing price data or None if failed
-        """
+    def get_iotx_price(self) -> Optional[float]:
+        """Fetch IoTeX price data from CoinGecko"""
         try:
+            # CoinGecko parameters - only get price
             params = {
                 'ids': 'iotex',
-                'vs_currencies': 'usd',
-                'include_market_cap': 'true',
-                'include_24hr_vol': 'true',
-                'include_24hr_change': 'true',
-                'include_last_updated_at': 'true'
+                'vs_currencies': 'usd'
             }
             
-            response = requests.get(self.coingecko_api, params=params, timeout=10)
+            response = requests.get(COINGECKO_URL, params=params, timeout=30)
             response.raise_for_status()
             
             data = response.json()
-            if 'iotex' in data:
-                iotex_data = data['iotex']
-                return {
-                    'price': iotex_data.get('usd', 0),
-                    'market_cap': iotex_data.get('usd_market_cap', 0),
-                    'volume_24h': iotex_data.get('usd_24h_vol', 0),
-                    'change_24h': iotex_data.get('usd_24h_change', 0),
-                    'last_updated': iotex_data.get('last_updated_at', 0),
-                    'source': 'CoinGecko'
-                }
+            
+            if 'iotex' in data and 'usd' in data['iotex']:
+                return data['iotex']['usd']
             return None
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching price from CoinGecko: {e}")
+        except requests.RequestException as e:
+            logging.error(f"Error fetching price data: {e}")
             return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing CoinGecko response: {e}")
+        except KeyError as e:
+            logging.error(f"Error parsing price data: {e}")
             return None
-    
-    def get_iotex_price_dia(self) -> Optional[Dict]:
-        """
-        Fetch IoTeX price data from DIA API as backup
-        
-        Returns:
-            Dict containing price data or None if failed
-        """
-        try:
-            dia_url = "https://api.diadata.org/v1/assetQuotation/Ethereum/0x6fB3e0A217407EFFf7Ca062D46c26E5d60a14d69"
-            
-            response = requests.get(dia_url, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            if 'Price' in data:
-                return {
-                    'price': data.get('Price', 0),
-                    'market_cap': 0,  # DIA doesn't provide market cap
-                    'volume_24h': data.get('VolumeYesterdayUSD', 0),
-                    'change_24h': 0,  # Calculate manually if needed
-                    'last_updated': int(time.time()),
-                    'source': 'DIA'
-                }
-            return None
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching price from DIA: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing DIA response: {e}")
-            return None
-    
-    def get_current_price(self) -> Optional[Dict]:
-        """
-        Get current IoTeX price from available APIs with fallback
-        
-        Returns:
-            Dict containing price data or None if all APIs fail
-        """
-        # Try CoinGecko first (more comprehensive data)
-        price_data = self.get_iotex_price_coingecko()
-        if price_data:
-            return price_data
-        
-        # Fallback to DIA API
-        logger.warning("CoinGecko API failed, trying DIA API")
-        price_data = self.get_iotex_price_dia()
-        if price_data:
-            return price_data
-        
-        logger.error("All price APIs failed")
-        return None
-    
-    def calculate_price_change(self, current_price: float) -> Dict:
-        """
-        Calculate price change since last check
-        
-        Args:
-            current_price (float): Current price
-            
-        Returns:
-            Dict containing change information
-        """
-        if self.previous_price is None:
-            return {
-                'change_amount': 0,
-                'change_percentage': 0,
-                'trend': 'neutral'
-            }
-        
-        change_amount = current_price - self.previous_price
-        change_percentage = (change_amount / self.previous_price) * 100 if self.previous_price > 0 else 0
-        
-        if change_amount > 0:
-            trend = 'up'
-        elif change_amount < 0:
-            trend = 'down'
+
+    def format_price_message(self, price: float) -> str:
+        """Format price into a simple message - just the price"""
+        # Format price with 6 decimal places for small values, 4 for larger
+        if price < 1:
+            price_str = f"${price:.6f}"
         else:
-            trend = 'neutral'
+            price_str = f"${price:.4f}"
         
-        return {
-            'change_amount': change_amount,
-            'change_percentage': change_percentage,
-            'trend': trend
-        }
-    
-    def format_price_message(self, price_data: Dict, change_data: Dict) -> str:
-        """
-        Format the price alert message for Telegram
-        
-        Args:
-            price_data (Dict): Current price data
-            change_data (Dict): Price change data
-            
-        Returns:
-            Formatted message string
-        """
-        current_price = price_data['price']
-        market_cap = price_data.get('market_cap', 0)
-        volume_24h = price_data.get('volume_24h', 0)
-        change_24h = price_data.get('change_24h', 0)
-        source = price_data.get('source', 'Unknown')
-        
-        # Trend emoji
-        trend_emoji = {
-            'up': '📈',
-            'down': '📉',
-            'neutral': '➡️'
-        }
-        
-        # 24h change emoji
-        change_24h_emoji = '🟢' if change_24h >= 0 else '🔴'
-        
-        # 5-minute change emoji
-        change_5min_emoji = trend_emoji.get(change_data['trend'], '➡️')
-        
-        message = f"""
-IoTeX (IOTX) Price Update
-Price: ${current_price:.6f} {change_5min_emoji}
-24h Change: {change_24h:.2f}% {change_24h_emoji}
-Market Cap: ${market_cap:,.2f}
-24h Volume: ${volume_24h:,.2f}
-Source: {source}
-Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """.strip()
-        
-        return message
-    
+        # Simple message - just the price
+        return price_str
+
     def send_telegram_message(self, message: str) -> bool:
-        """
-        Send message to Telegram channel
-        
-        Args:
-            message (str): Message to send
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Send message to Telegram channel"""
         try:
-            url = f"{self.telegram_api_url}/sendMessage"
             payload = {
-                'chat_id': self.channel_id,
-                'text': message,
-                'parse_mode': 'Markdown',
-                'disable_web_page_preview': True
+                'chat_id': TELEGRAM_CHAT_ID,
+                'text': message
             }
             
-            response = requests.post(url, json=payload, timeout=10)
+            response = requests.post(TELEGRAM_URL, json=payload, timeout=30)
             response.raise_for_status()
             
-            result = response.json()
-            if result.get('ok'):
-                logger.info("Message sent successfully to Telegram")
-                return True
-            else:
-                logger.error(f"Telegram API error: {result}")
-                return False
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error sending message to Telegram: {e}")
+            logging.info("Message sent successfully to Telegram")
+            return True
+            
+        except requests.RequestException as e:
+            logging.error(f"Error sending Telegram message: {e}")
             return False
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing Telegram response: {e}")
-            return False
-    
-    def run_price_check(self) -> bool:
-        """
-        Run a single price check and send alert if successful
+
+    def run_price_check(self):
+        """Run a single price check and send alert"""
+        logging.info("Checking IoTeX price from CoinGecko...")
         
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        logger.info("Checking IoTeX price...")
+        # Get price data
+        price = self.get_iotx_price()
+        if not price:
+            logging.error("Failed to get price data from CoinGecko")
+            return
         
-        # Get current price data
-        price_data = self.get_current_price()
-        if not price_data:
-            logger.error("Failed to fetch price data")
-            return False
-        
-        current_price = price_data['price']
-        logger.info(f"Current IoTeX price: ${current_price:.6f}")
-        
-        # Calculate price change
-        change_data = self.calculate_price_change(current_price)
-        
-        # Format and send message
-        message = self.format_price_message(price_data, change_data)
+        # Format simple message
+        message = self.format_price_message(price)
         success = self.send_telegram_message(message)
         
         if success:
-            # Update price history
-            self.previous_price = current_price
-            self.price_history.append({
-                'timestamp': datetime.now().isoformat(),
-                'price': current_price,
-                'source': price_data.get('source', 'Unknown')
-            })
-            
-            # Keep only last 100 price points
-            if len(self.price_history) > 100:
-                self.price_history = self.price_history[-100:]
+            self.last_price = price
+            self.last_check_time = datetime.now()
+            logging.info(f"Price alert sent successfully. Current price: ${price:.6f}")
+        else:
+            logging.error("Failed to send price alert")
+
+    def run(self):
+        """Main bot loop - runs continuously and checks every 5 minutes"""
+        logging.info("🚀 IoTeX Simple Price Alert Bot Started!")
+        logging.info("📊 Using CoinGecko API (free tier)")
+        logging.info("⏰ Sending simple price alerts every 5 minutes...")
         
-        return success
-    
-    def run_continuous(self, interval_minutes: int = 5):
-        """
-        Run the bot continuously with specified interval
+        # Send initial alert
+        self.run_price_check()
         
-        Args:
-            interval_minutes (int): Interval between price checks in minutes
-        """
-        logger.info(f"Starting IoTeX Price Bot with {interval_minutes}-minute intervals")
-        logger.info(f"Bot Token: {self.bot_token[:10]}...")
-        logger.info(f"Channel ID: {self.channel_id}")
-        
-        interval_seconds = interval_minutes * 60
-        
+        # Main loop - check every 5 minutes (300 seconds)
         while True:
             try:
+                logging.info("⏳ Waiting 5 minutes until next check...")
+                time.sleep(300)  # Wait 5 minutes
                 self.run_price_check()
-                logger.info(f"Sleeping for {interval_minutes} minutes...")
-                time.sleep(interval_seconds)
                 
             except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
+                logging.info("Bot stopped by user")
                 break
             except Exception as e:
-                logger.error(f"Unexpected error: {e}")
-                logger.info("Continuing after error...")
+                logging.error(f"Unexpected error: {e}")
+                logging.info("🔄 Retrying in 1 minute...")
                 time.sleep(60)  # Wait 1 minute before retrying
 
 def main():
-    """
-    Main function to run the bot
-    """
-    # Read secrets from environment (for local testing or Railway)
-    BOT_TOKEN = os.getenv("TG_TOKEN")
-    CHANNEL_ID = os.getenv("TG_CHAT_ID")
+    # Check if required environment variables are set
+    required_vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
     
-    if not BOT_TOKEN or not CHANNEL_ID:
-        logger.error("Missing TG_TOKEN or TG_CHAT_ID environment variables")
-        raise SystemExit(1)
+    if missing_vars:
+        logging.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logging.error("Please set: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+        return
     
-    bot = IoTeXPriceBot(BOT_TOKEN, CHANNEL_ID)
-    bot.run_continuous(interval_minutes=5)
+    logging.info("✅ Environment variables configured")
+    logging.info("📡 CoinGecko API - No API key required!")
+    
+    # Create and run bot
+    bot = IoTeXPriceBot()
+    bot.run()
 
 if __name__ == "__main__":
     main()
