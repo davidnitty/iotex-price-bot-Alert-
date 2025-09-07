@@ -63,7 +63,7 @@ class IoTeXPriceBot:
             response.raise_for_status()
             
             data = response.json()
-            if \\'iotex\\': in data:
+            if 'iotex': in data:
                 iotex_data = data[\\'iotex\\']
                 return {
                     \\'price\\': iotex_data.get(\\'usd\\', 0),
